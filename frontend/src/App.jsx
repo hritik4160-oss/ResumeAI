@@ -29,7 +29,7 @@ function App() {
 
     try {
       const response = await fetch(
-        "http://127.0.0.1:8000/analyze",
+        "http://https://resumeai-u85q.onrender.com/analyze",
         {
           method: "POST",
           body: formData,
