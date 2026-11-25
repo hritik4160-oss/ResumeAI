@@ -8,6 +8,7 @@ from dotenv import load_dotenv
 import os
 import re
 import json
+import time
 
 from database import engine, get_db
 from models import Base, ResumeAnalysis
@@ -64,12 +65,26 @@ def get_gemini_recommendations(
     matched_skills,
     missing_skills
 ):
+    fallback_recommendations = [
+        "Improve resume bullet points by describing your actions and measurable results.",
+        "Highlight projects that demonstrate skills relevant to the target job.",
+        "Use genuine examples to demonstrate your technical and professional skills.",
+        "Organize your resume with clear sections for skills, projects, education, and experience.",
+        "Tailor your resume summary and project descriptions to the target role."
+    ]
+
+    if missing_skills:
+        fallback_recommendations.insert(
+            0,
+            "If you genuinely possess these skills, consider highlighting them: "
+            + ", ".join(missing_skills[:5]) + "."
+        )
+
     api_key = os.getenv("GEMINI_API_KEY")
 
     if not api_key:
-        return [
-            "Gemini API key was not found. Check your backend .env file."
-        ]
+        print("Gemini API key not found. Using fallback recommendations.")
+        return fallback_recommendations
 
     client = genai.Client(api_key=api_key)
 
@@ -107,26 +122,44 @@ Keep the language clear and concise.
 """
 
     try:
-        response = client.models.generate_content(
-            model="gemini-3.5-flash-lite",
-            contents=prompt
-        )
+        for attempt in range(3):
+            try:
+                response = client.models.generate_content(
+                    model="gemini-3.5-flash-lite",
+                    contents=prompt
+                )
 
-        if response.text:
-            return [
-                line.strip()
-                for line in response.text.split("\n")
-                if line.strip()
-            ]
+                if response.text:
+                    return [
+                        line.strip()
+                        for line in response.text.split("\n")
+                        if line.strip()
+                    ]
 
-        return ["Gemini returned an empty response."]
+                print("Gemini returned an empty response.")
+                return fallback_recommendations
 
-    except Exception as error:
-        print("Gemini error:", str(error))
-        return [
-            "Gemini recommendations are temporarily unavailable.",
-            "Please check your API key, model access, and internet connection."
-        ]
+            except Exception as error:
+                error_text = str(error)
+                print("Gemini error:", error_text)
+
+                retryable = any(
+                    code in error_text
+                    for code in ["503", "429", "500", "502", "504"]
+                )
+
+                if retryable and attempt < 2:
+                    wait_time = 2 * (attempt + 1)
+                    print(
+                        f"Retrying Gemini in {wait_time} seconds..."
+                    )
+                    time.sleep(wait_time)
+                    continue
+
+                print("Using fallback recommendations.")
+                return fallback_recommendations
+
+        return fallback_recommendations
 
     finally:
         client.close()
@@ -226,7 +259,7 @@ async def analyze_resume(
                 "Continue tailoring your achievements to the target role."
             )
 
-        # Generate real AI recommendations using Gemini
+        # Generate AI recommendations or fallback recommendations
         ai_recommendations = get_gemini_recommendations(
             resume_text,
             job_description,
@@ -234,7 +267,7 @@ async def analyze_resume(
             missing_skills
         )
 
-        # Save analysis to SQLite
+        # Save analysis to database
         analysis = ResumeAnalysis(
             resume_filename=resume.filename,
             job_description=job_description,
@@ -260,7 +293,7 @@ async def analyze_resume(
             "suggestions": suggestions,
             "ai_recommendations": ai_recommendations,
             "resume_text": resume_text[:1500],
-            "message": "Gemini-powered resume analysis completed and saved!"
+            "message": "Resume analysis completed and saved!"
         }
 
     except Exception as error:
